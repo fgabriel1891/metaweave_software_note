@@ -43,26 +43,11 @@ rendering, and supplied results are loaded for figures and tables. See the
 To regenerate the workflow SVG from the project root, install `DiagrammeR`
 and `DiagrammeRsvg`, then run `source("images/create-workflow.R")` in R.
 
-## Before submitting or publishing this repository
-
-- Render and inspect the current article and all three supplements. Run the
-  displayed analyses in a fresh session and compare them with the saved
-  results. The current bundle has not had a clean end-to-end rerun.
-- Document the original palm and mammal range sources, versions, preparation,
-  taxonomic matching and redistribution permissions before making these
-  data public. The included matched rasters are the inputs used for S2.
-- Check the stability of the Ecuador results with more simulation draws;
-  the included article figure uses 49 draws per scenario and site.
-- Add the verified release date and version-specific software DOI, final
-  author and submission statements, and reviewer-access links. Resolve any
-  third-party data licenses before uploading to a public Git repository.
+## Sources 
 
 The Ecuador data are archived at <https://zenodo.org/records/5537283>.
 The palm interaction records are from <https://doi.org/10.5061/dryad.rd46vq3>.
 The package and its license are available at
-<https://github.com/fgabriel1891/metaweave>. The presence of third-party
-data here does not establish permission to redistribute them.
-"# metaweave_software_note" 
-"# metaweave_software_note" 
-"# metaweave_software_note" 
-"# metaweave_software_note" 
+<https://github.com/fgabriel1891/metaweave>. 
+
+
