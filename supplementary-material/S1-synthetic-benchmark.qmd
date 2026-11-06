@@ -1,0 +1,302 @@
+---
+title: "Supplementary material 1"
+subtitle: "A benchmark for local network inference with known-processes"
+format:
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+  docx:
+    toc: true
+execute:
+  echo: true
+  message: false
+  warning: false
+---
+
+If interaction probabilities change with the environment, how well can regional models recover them at individual sites? We explore this question with a simulated landscape of 225 cells, 24 producer species and 18 consumer species. For each possible pair, the simulation defines a known probability of interaction in each cell. We can compare predictions with those known values because we created the data ourselves.
+
+The file `data/benchmark/benchmark_objects.rds` contains the regional model parameters and the known local probabilities. The code below recreates the species range maps using the original random seed. We compare a **block model**, in which species in the same pair of groups share an interaction probability, with a **species-pair model**, in which every pair has its own regional probability. Both models use the same species present in each cell. We then compare their predictions with the known probabilities from the simulation.
+
+## Reconstruct local networks with MetaWeave
+
+The complete benchmark is supplied as an R script. Run the following
+command from the supplementary-material directory to regenerate the
+simulation, model results and scores. It is displayed without execution
+here; the document loads the saved results for a fast render.
+
+```{r}
+#| eval: false
+source("scripts/synthetic_benchmark.R")
+```
+
+This chunk rebuilds the species ranges and passes them to `new_distribution_collection()` to identify the producer and consumer groups. `block_model()` creates a regional rule from block memberships and block-pair probabilities; `probability_matrix_model()` creates another rule from species-pair probabilities. We give each rule the same ranges in `run_spatial_inference()`, so their local predictions differ only in the interaction assumption.
+
+```{r}
+#| include: false
+library(metaweave)
+library(terra)
+library(tidyverse)
+
+benchmark <- readRDS("data/benchmark/benchmark_objects.rds")
+block_result <- benchmark$results$SBM
+pair_result <- benchmark$results$regional_matrix
+```
+
+```{r}
+#| eval: false
+# Build species ranges, then apply two regional interaction rules.
+library(metaweave)
+library(terra)
+library(tidyverse)
+
+benchmark <- readRDS("data/benchmark/benchmark_objects.rds")
+
+# Create an environmental gradient and reproducible species ranges.
+set.seed(20260809)
+grid <- rast(nrows = 15, ncols = 15, xmin = 0, xmax = 1,
+             ymin = 0, ymax = 1, crs = "EPSG:4326")
+xy <- xyFromCell(grid, seq_len(ncell(grid)))
+environment <- as.numeric(scale(xy[, 1]))
+
+make_traits <- function(species, centre) {
+  data.frame(species = species,
+             optimum = runif(length(species), -1.5, 1.5),
+             breadth = runif(length(species), 0.65, 1.1),
+             intercept = rnorm(length(species), centre, 0.25))
+}
+
+producer_traits <- make_traits(sprintf("producer_%02d", 1:24), 1.1)
+consumer_traits <- make_traits(sprintf("consumer_%02d", 1:18), 0.9)
+
+make_ranges <- function(traits) {
+  layers <- lapply(seq_len(nrow(traits)), function(i) {
+    chance <- plogis(traits$intercept[i] -
+      (environment - traits$optimum[i])^2 / (2 * traits$breadth[i]^2))
+    presence <- rbinom(length(chance), 1L, chance)
+    layer <- rast(grid)
+    values(layer) <- ifelse(presence == 1L, 1, NA_real_)
+    names(layer) <- traits$species[i]
+    layer
+  })
+  rast(layers)
+}
+
+
+species_ranges <- list(
+  producers = new_distribution_collection(make_ranges(producer_traits),
+                                           guild = "producers",
+                                           metadata = producer_traits),
+  consumers = new_distribution_collection(make_ranges(consumer_traits),
+                                           guild = "consumers",
+                                           metadata = consumer_traits)
+)
+```
+
+The next chunk defines the two regional models and applies them to the same species ranges. `run_spatial_inference()` identifies the species in each cell and returns a local probability matrix and summaries. The code is shown for readers; the document uses the saved results to render quickly.
+
+
+```{r}
+#| eval: false
+# Compare block-level and species-pair interaction rules.
+block_rule <- block_model(
+  benchmark$producer_lookup, benchmark$consumer_lookup,
+  benchmark$theta, "producers", "consumers"
+)
+pair_rule <- probability_matrix_model(
+  benchmark$regional_probability, "producers", "consumers"
+)
+
+block_result <- run_spatial_inference(species_ranges, block_rule)
+pair_result <- run_spatial_inference(species_ranges, pair_rule)
+```
+
+
+
+### Generate regional and local interaction probabilities
+
+We generate interaction probabilities in three steps. First, we assign each
+producer and consumer to one of three groups and set an interaction
+probability for each combination of groups. Second, we add random variation
+among species pairs within each combination. This gives each pair its own
+regional probability. Third, we give each pair an environmental optimum:
+its local probability increases where the environment is closer to that
+optimum.
+
+The code below shows these calculations. It uses the group assignments and
+block probabilities stored in the supplied benchmark file. The resulting
+local probabilities are known because we define the process that generates
+them; they provide the reference for evaluating the alternative models.
+The code is displayed without running during rendering.
+
+```{r}
+#| eval: false
+#| echo: true
+# Continue the original random sequence after generating the ranges.
+producer_names <- producer_traits$species
+consumer_names <- consumer_traits$species
+producer_blocks <- benchmark$producer_lookup$guild
+consumer_blocks <- benchmark$consumer_lookup$guild
+block_probability <- benchmark$theta[producer_blocks, consumer_blocks]
+pair_effect <- matrix(rnorm(24 * 18, 0, 0.55), 24, 18)
+pair_probability <- plogis(qlogis(block_probability) + pair_effect)
+pair_optimum <- matrix(runif(24 * 18, -1.5, 1.5), 24, 18)
+dimnames(pair_probability) <- dimnames(pair_optimum) <-
+  list(producer_names, consumer_names)
+
+# For a cell, retain its species and adjust probabilities by environment.
+known_probabilities <- function(plants, consumers, cell_environment) {
+  base <- pair_probability[plants, consumers, drop = FALSE]
+  optimum <- pair_optimum[plants, consumers, drop = FALSE]
+  context_match <- exp(-0.5 * ((cell_environment - optimum) / 0.8)^2)
+  plogis(qlogis(base) - 0.9 + 1.8 * context_match)
+}
+```
+
+### Apply the known process as a custom MetaWeave model
+
+The third model is an **oracle**: it is given the process that generated
+the data, including the environment at each cell. It is a check that
+MetaWeave carries a supplied prediction through the workflow; its perfect
+recovery is expected and does not measure performance on independent data.
+The code below shows how a custom prediction function returns a local
+network and how `new_inference_model()` makes it available to MetaWeave.
+
+```{r}
+#| eval: false
+# Turn the known process into a local prediction rule.
+context_predict <- function(model, assemblage) {
+  p <- model$parameters
+  plants <- assemblage$species[["producers"]]
+  consumers <- assemblage$species[["consumers"]]
+  local_environment <- (assemblage$coordinates[[1]] - p$x_center) / p$x_scale
+  base <- p$regional_probability[plants, consumers, drop = FALSE]
+  optimum <- p$pair_optimum[plants, consumers, drop = FALSE]
+  match <- exp(-0.5 * ((local_environment - optimum) / 0.8)^2)
+  probability <- plogis(qlogis(pmin(pmax(base, 1e-8), 1 - 1e-8)) -
+                          0.9 + 1.8 * match)
+  new_ecological_network(probability, type = "probability",
+                         metadata = list(cell_id = assemblage$cell_id,
+                                         model = model$name,
+                                         environment = local_environment),
+                         row_group = "producers", column_group = "consumers")
+}
+oracle_rule <- new_inference_model(
+  predict = context_predict, name = "known-process model",
+  parameters = list(regional_probability = pair_probability,
+                    pair_optimum = pair_optimum,
+                    x_center = mean(xy[, 1]), x_scale = sd(xy[, 1]))
+)
+oracle_result <- run_spatial_inference(species_ranges, oracle_rule)
+```
+
+The table below shows `theta`, the three-by-three matrix of probabilities
+between producer and consumer groups. The species-pair matrix has 24 rows
+and 18 columns. These two matrices define the regional rules passed to
+MetaWeave; the known local probabilities provide the reference for the
+comparison.
+
+```{r}
+# Display the regional probabilities supplied to MetaWeave.
+as_tibble(benchmark$theta, rownames = "producer_block") |>
+  knitr::kable(digits = 2, caption = "Interaction probabilities between producer and consumer groups.")
+tibble(producer_species = nrow(benchmark$regional_probability),
+       consumer_species = ncol(benchmark$regional_probability),
+       mean_pair_probability = mean(benchmark$regional_probability)) |>
+  knitr::kable(digits = 3, caption = "Regional species-pair model.")
+```
+
+## Compare predictions with the known process
+
+The archived `context_model` result contains the exact probability matrix used to generate interactions in each cell. This chunk takes the local matrices in each `run_spatial_inference()` result and compares them with those known matrices. A small root-mean-square error (RMSE) means closer recovery of the known probabilities. To assess predictions against one possible binary realization, we draw links from the known probabilities with the same recorded seed for each cell and model.
+
+```{r}
+# Score each local prediction against the same known process.
+truth <- benchmark$results$context_model$result
+models <- list(block = block_result$result, species_pair = pair_result$result,
+               known_process = truth)
+
+score_one <- function(predicted, known, cell_id) {
+  p <- predicted$matrix
+  q <- known$matrix
+  set.seed(100000L + cell_id)
+  observed <- matrix(rbinom(length(q), 1L, as.vector(q)), nrow(q), ncol(q))
+  safe <- pmin(pmax(p, 1e-8), 1 - 1e-8)
+  tibble(
+    probability_rmse = sqrt(mean((p - q)^2)),
+    brier = mean((p - observed)^2),
+    log_loss = -mean(observed * log(safe) + (1 - observed) * log(1 - safe)),
+    true_connectance = mean(q), predicted_connectance = mean(p)
+  )
+}
+
+cell_scores <- map_dfr(names(models), function(label) {
+  output <- models[[label]]
+  map_dfr(seq_along(output$networks), function(i) {
+    score_one(output$networks[[i]], truth$networks[[i]],
+              output$index$cell_id[i]) |>
+      mutate(model = label, cell_id = output$index$cell_id[i], .before = 1)
+  })
+})
+
+cell_scores |>
+  as_tibble() |>
+  group_by(model) |>
+  summarise(across(c(probability_rmse, brier, log_loss), mean),
+            .groups = "drop") |>
+  knitr::kable(digits = 3, caption = "Mean prediction scores across cells; lower values indicate better recovery.")
+```
+
+The known-process model has probability RMSE zero by construction. Its nonzero score against sampled binary interactions reflects random realization, not failure to recover its own probabilities. In the original benchmark, the species-pair model had lower mean probability RMSE than the block model (about 0.112 versus 0.147); the calculation above regenerates that comparison from MetaWeave's local matrices.
+
+The boxplot shows how accuracy varies among cells in the two MetaWeave results. It displays the scores calculated above; it does not make another network prediction.
+
+```{r}
+# Compare the distribution of prediction errors across cells.
+ggplot(as_tibble(cell_scores),
+       aes(x = model, y = probability_rmse, fill = model)) +
+  geom_boxplot(width = 0.55, show.legend = FALSE) +
+  labs(x = "Interaction rule", y = "Cell-level probability RMSE") +
+  theme_classic()
+```
+
+This benchmark demonstrates how a common MetaWeave workflow carries different interaction assumptions through the same landscape. The ranking depends on this particular generating process, which contains substantial species-pair variation; it is not a general ranking of model classes.
+
+### Connectance and binary interactions
+
+The manuscript also compares expected connectance: the average interaction
+probability across possible pairs in a cell. Points close to the diagonal
+show that the predicted and known values agree. This summary can look good
+even when some individual pair probabilities differ, which is why it
+complements the RMSE above.
+
+```{r}
+# Compare predicted and generating connectance for every cell.
+ggplot(cell_scores, aes(true_connectance, predicted_connectance, colour = model)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, colour = "grey50") +
+  geom_point(alpha = 0.4, size = 1) +
+  coord_equal() +
+  labs(x = "Known expected connectance", y = "Predicted expected connectance",
+       colour = "Interaction rule") +
+  theme_classic()
+```
+
+Brier score and log loss compare predicted probabilities with one sampled
+binary network per cell. Lower values indicate better predictions for that
+realization. The same sampled links are used for all three models, so the
+comparison is not affected by giving each model a different set of observed
+links. Even the oracle has nonzero scores because an interaction sampled
+from a probability is random.
+
+```{r}
+# Summarize the two scores for the sampled binary links.
+cell_scores |>
+  group_by(model) |>
+  summarise(across(c(brier, log_loss), mean), .groups = "drop") |>
+  pivot_longer(c(brier, log_loss), names_to = "score", values_to = "value") |>
+  ggplot(aes(model, value, fill = model)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ score, scales = "free_y") +
+  labs(x = "Interaction rule", y = "Mean score (lower is better)") +
+  theme_classic()
+```

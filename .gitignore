@@ -1,0 +1,7 @@
+.Rhistory
+.RData
+.Rproj.user/
+.quarto/
+*_files/
+*.knit.md
+*.utf8.md

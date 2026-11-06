@@ -1,0 +1,236 @@
+---
+title: "Supplementary material 2"
+subtitle: "From a palm–mammal metaweb to local interaction maps"
+format:
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+  docx:
+    toc: true
+execute:
+  echo: true
+  message: false
+  warning: false
+---
+
+## Question and study system
+
+Where do two interpretations of regional palm–mammal frugivory records predict different local networks? The regional data document which pairs have interacted somewhere in the Neotropics. The matched range maps cover 51 palms and 68 mammals on a 1° grid. A cell is eligible when it contains at least one species from each group. These ranges indicate potential co-occurrence, not verified occupancy or interaction at every cell.
+
+We compare two interaction rules using the same local species lists. The **recorded metaweb** is a table of regional interactions: a pair receives 1 if it was documented and 0 otherwise. A zero means no record in this dataset; it does not prove the species cannot interact. The **stochastic block model** (SBM) groups species by their regional interaction patterns. It assigns a probability to each combination of palm and mammal groups. We provide the fitted model and show how MetaWeave uses it to predict local networks.
+
+## Inputs and regional interaction rules
+
+The original interaction records are from [Muñoz, Trøjelsgaard and Kissling (2019)](https://doi.org/10.5061/dryad.rd46vq3). We include a copy of the records, two sets of range maps, and a file containing the regional interaction matrix and fitted SBM parameters. The species names in these inputs have already been matched. These are the inputs used for the manuscript maps. The supplement starts with the prepared maps; it does not rebuild them from the original range sources.
+
+The first chunk reads those inputs before constructing a MetaWeave model. It reports the size of the matched regional network and fitted SBM, so the species pool used by the later `probability_matrix_model()` and `block_model()` calls is clear.
+
+```{r}
+# Read regional evidence and the matched spatial inputs.
+library(metaweave)
+library(terra)
+library(tidyverse)
+
+records <- read.csv("data/palm-mammal/PalmFrugDatasetOCT2018.csv")
+regional_records <- records |>
+  filter(frugClass == "MAMMAL", biogeographicRegion == "Neotropics")
+palms <- rast("data/palm-mammal/palms.tif")
+mammals <- rast("data/palm-mammal/mammals.tif")
+regional <- readRDS("data/palm-mammal/fitted-models.rds")
+
+tibble(
+  source_records = nrow(regional_records),
+  palms = nrow(regional$regional_web),
+  mammals = ncol(regional$regional_web),
+  documented_pairs = sum(regional$regional_web),
+  palm_blocks = nrow(regional$theta_sbm),
+  mammal_blocks = ncol(regional$theta_sbm)
+) |>
+  pivot_longer(everything(), names_to = "Measure", values_to = "Value") |>
+  knitr::kable(caption = "Regional interaction data and fitted model.")
+```
+
+The regional matrix contains 234 documented pairs among the species with matched range maps. Some original records involve species outside this matched set and are therefore excluded. We fitted an SBM to the matrix using `cassandRa`. The selected model placed palms in seven groups and mammals in seven groups according to their interaction patterns. Each entry in `theta_sbm` gives the estimated interaction probability between one palm group and one mammal group.
+
+The code below shows how the regional matrix was passed to `cassandRa` and how the species groups and their interaction probabilities were obtained. MetaWeave uses these quantities to assign probabilities to local species pairs. The fit is supplied with the supplement, so this code is displayed without refitting the model when the document renders. A new fit can differ because the fitting procedure is stochastic.
+
+```{r}
+#| eval: false
+#| echo: true
+# Convert the matched regional network to cassandRa's input form.
+cass_network <- cassandRa::CreateListObject(regional$regional_web)
+fits <- cassandRa::FitSBM(list = cass_network, n_SBM = 10, G = NULL)
+best <- fits$SBM1
+
+# These are the quantities that MetaWeave's block_model() needs.
+block_probabilities <- best$Omega_rs
+palm_blocks <- best$SB_H
+mammal_blocks <- best$SB_W
+```
+
+The following table shows the estimated interaction probability for each combination of palm and mammal groups:
+
+```{r}
+# Display the fitted probabilities used to reconstruct local networks.
+theta_table <- regional$theta_sbm
+rownames(theta_table) <- paste0("P", seq_len(nrow(theta_table)))
+colnames(theta_table) <- paste0("M", seq_len(ncol(theta_table)))
+as_tibble(theta_table, rownames = "Palm group") |>
+  knitr::kable(digits = 2, caption = "Interaction probabilities for palm (P) and mammal (M) groups.")
+```
+
+MetaWeave accepts either regional representation as an interaction rule. `probability_matrix_model()` takes the recorded species-pair matrix, including its zeroes and ones. `block_model()` takes a block assignment for every retained species and the matrix of block-pair probabilities. Both objects tell MetaWeave how to fill a local interaction matrix.
+
+```{r}
+# Express the two regional assumptions as interchangeable MetaWeave rules.
+recorded_rule <- probability_matrix_model(
+  regional$regional_web, "producers", "consumers"
+)
+sbm_rule <- block_model(
+  regional$producer_lookup, regional$consumer_lookup,
+  regional$theta_sbm, "producers", "consumers"
+)
+```
+
+## Reconstruct the same local assemblages
+
+Each raster layer shows the range of one species. `run_spatial_inference()` finds the palms and mammals whose ranges overlap each eligible cell, forms their possible pairs, and applies the chosen regional rule. We apply both rules to the same ranges. The resulting tables contain coordinates, species richness, expected links and mean interaction probability for each cell. The code below joins these summaries by cell identifier. The local predictions are included with the supplement and loaded for rendering.
+
+```{r}
+#| eval: false
+# Reconstruct the same assemblages and join their predictions by grid cell.
+species_ranges <- list(producers = palms, consumers = mammals)
+recorded <- run_spatial_inference(species_ranges, recorded_rule)
+sbm <- run_spatial_inference(species_ranges, sbm_rule)
+```
+
+```{r}
+#| include: false
+spatial_results <- readRDS("data/palm-mammal/spatial-results.rds")
+recorded <- spatial_results$recorded_result
+sbm <- spatial_results$sbm_result
+```
+
+```{r}
+# Compare the saved cell summaries from the two model runs.
+recorded_cells <- as_tibble(recorded$result$index) |>
+  select(cell_id, x, y, row_richness, column_richness,
+         recorded_links = expected_links,
+         recorded_connectance = mean_probability)
+sbm_cells <- as_tibble(sbm$result$index) |>
+  select(cell_id, sbm_links = expected_links,
+         sbm_connectance = mean_probability)
+cells <- recorded_cells |>
+  left_join(sbm_cells, by = "cell_id") |>
+  mutate(link_difference = sbm_links - recorded_links,
+         connectance_difference = sbm_connectance - recorded_connectance)
+
+cells |>
+  summarise(eligible_cells = n(),
+            mean_palms = mean(row_richness),
+            mean_mammals = mean(column_richness),
+            mean_recorded_links = mean(recorded_links),
+            mean_sbm_links = mean(sbm_links)) |>
+  pivot_longer(everything(), names_to = "Measure", values_to = "Value") |>
+  knitr::kable(digits = 2, caption = "Mean local network summaries across grid cells.")
+```
+
+The recorded rule produces a binary local matrix: a regional pair is retained wherever both species' ranges cover the cell. The SBM produces a probability matrix. Its **expected links** are the sum of those probabilities, not a sampled number of observed interactions. The mean probability across possible pairs is expected connectance. It helps distinguish interaction density from the effect of having more species and more possible pairs.
+
+### One cell in detail
+
+The cell with the most recorded links offers a concrete comparison. Each `run_spatial_inference()` result also retains its local matrices in `$result$networks`. This chunk retrieves the same cell from both results and separates the SBM's expected-link total into contributions from recorded and unrecorded regional pairs.
+
+```{r}
+# Inspect how recorded and unrecorded pairs contribute in one cell.
+example <- cells |> slice_max(recorded_links, n = 1, with_ties = FALSE)
+recorded_position <- match(example$cell_id, recorded$result$index$cell_id)
+sbm_position <- match(example$cell_id, sbm$result$index$cell_id)
+recorded_matrix <- recorded$result$networks[[recorded_position]]$matrix
+sbm_matrix <- sbm$result$networks[[sbm_position]]$matrix
+
+tibble(
+  cell_id = example$cell_id,
+  palms = nrow(recorded_matrix),
+  mammals = ncol(recorded_matrix),
+  possible_pairs = length(recorded_matrix),
+  recorded_links = sum(recorded_matrix),
+  sbm_expected_on_recorded_pairs = sum(sbm_matrix[recorded_matrix == 1]),
+  sbm_expected_on_unrecorded_pairs = sum(sbm_matrix[recorded_matrix == 0]),
+  sbm_expected_links = sum(sbm_matrix)
+) |>
+  pivot_longer(everything(), names_to = "Measure", values_to = "Value") |>
+  knitr::kable(digits = 2, caption = "Recorded and expected links in the example cell.")
+```
+
+The SBM can add expected links among unrecorded pairs while reducing the contribution of recorded pairs from exactly one to a probability below one. Its total can therefore be lower even when it gives unrecorded pairs positive probability. `SBM minus recorded` is a **signed difference in expected totals**, not a count of newly proposed links.
+
+## Patterns across the landscape
+
+The five maps below correspond to the manuscript figure. Richness maps show the species pool in each cell. The middle two maps show local links under each regional rule on the same colour scale. The final map shows where the rules disagree. Blank areas contain no eligible assemblage in these inputs. The next chunk defines a plotting helper for the cell summaries returned by `run_spatial_inference()`; it performs no further network inference.
+
+```{r}
+#| code-fold: true
+# Define consistent colour scales for the spatial comparison.
+library(ggplot2)
+library(patchwork)
+
+map_panel <- function(variable, title, limits = NULL, difference = FALSE) {
+  p <- ggplot(cells, aes(x = x, y = y, fill = .data[[variable]])) +
+    geom_raster() + coord_equal() +
+    labs(title = title, x = NULL, y = NULL, fill = NULL) +
+    theme_classic() +
+    theme(panel.border = element_rect(fill = NA, colour = "grey70"),
+          legend.position = "bottom")
+  if (difference) {
+    p + scale_fill_gradient2(low = "#3B4CC0", mid = "white",
+                             high = "#B40426", midpoint = 0,
+                             limits = limits)
+  } else {
+    p + scale_fill_viridis_c(option = "magma", limits = limits)
+  }
+}
+
+link_max <- max(c(cells$recorded_links, cells$sbm_links))
+difference_max <- max(abs(cells$link_difference))
+```
+
+The plotting chunk maps the two MetaWeave outputs side by side and uses their joined cell summary to calculate the signed difference. Panels C and D share a colour range, making their predicted link totals directly comparable.
+
+```{r}
+#| fig-width: 11
+#| fig-height: 7
+#| fig-cap: "Local palm–mammal network reconstructions from the same species ranges. (A–B) Palm and mammal richness. (C) Recorded regional pairs whose species co-occur. (D) Expected links from the regional SBM. (E) SBM expected links minus recorded links, with zero at the colour midpoint. Maps represent potential interactions, not observed local encounters."
+# Map richness and local predictions on the shared grid.
+panel_a <- map_panel("row_richness", "Palm richness")
+panel_b <- map_panel("column_richness", "Mammal richness")
+panel_c <- map_panel("recorded_links", "Recorded links", c(0, link_max))
+panel_d <- map_panel("sbm_links", "SBM expected links", c(0, link_max))
+panel_e <- map_panel("link_difference", "SBM minus recorded",
+                     c(-difference_max, difference_max), TRUE)
+
+(panel_a | panel_b | panel_c) /
+  (panel_d | panel_e | plot_spacer()) +
+  plot_annotation(tag_levels = "A")
+```
+
+Across the analyzed cells, the recorded baseline has about 21.17 potential links per cell and the SBM about 12.11 expected links. The broad patterns are similar, while the largest signed differences in the manuscript map occur around the Yungas and Andean–Amazon transition. These are **unweighted cell averages**; geographic cells on a longitude–latitude grid do not have equal physical area. A cell's link total also depends partly on its species richness, so connectance is a useful companion measure.
+
+The final table uses the same MetaWeave cell summaries to compare expected connectance, which accounts for the number of possible pairs, and the typical signed link difference. It summarizes predictions rather than adding observations or refitting the regional model.
+
+```{r}
+# Summarize interaction density alongside the signed link difference.
+cells |>
+  summarise(mean_recorded_connectance = mean(recorded_connectance),
+            mean_sbm_connectance = mean(sbm_connectance),
+            median_link_difference = median(link_difference)) |>
+  pivot_longer(everything(), names_to = "Measure", values_to = "Value") |>
+  knitr::kable(digits = 3, caption = "Connectance and difference in expected links.")
+```
+
+## Interpretation and limits
+
+MetaWeave makes the interaction assumption explicit while holding local composition fixed. The difference map identifies cells where sampling local networks would be especially useful for distinguishing the two regional interpretations. Neither prediction has been validated against independent local interaction observations here. Range overlap does not establish local occupancy, and a possible fruit interaction does not by itself establish effective seed dispersal.
+
+The included range maps reproduce the spatial comparison for the matched species. Their original sources, versions, rasterization steps, taxonomic decisions and redistribution terms still need to be documented before the data package is publicly distributed.

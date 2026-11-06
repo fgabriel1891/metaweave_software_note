@@ -1,0 +1,427 @@
+---
+title: "Supplementary material 3"
+subtitle: "Testing interaction assembly in Ecuadorian plant–frugivore networks"
+format:
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+  docx:
+    toc: true
+execute:
+  echo: true
+  message: false
+  warning: false
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+## Ecological question
+
+Can regional interaction structure help explain the nestedness and
+modularity of six observed local plant–frugivore networks in Ecuador?
+The records come from the [archived case
+study](https://zenodo.org/records/5537283). The included data contain
+observed interactions at six sites. We combine all recorded species
+pairs into one regional network, also called a metaweb, and fit one
+stochastic block model (SBM) to it. The SBM groups species by their
+interaction patterns and estimates an interaction probability for each
+pair of groups.
+
+This supplement includes the records, the fitted regional model, and
+results from 49 simulated networks for each scenario at each site. The
+document loads the fitted model and simulation results when it renders;
+the fitting and simulation code is shown for readers but is not run.
+Only one small local network is reconstructed to illustrate MetaWeave.
+The sites span 1,000, 2,000 and 3,000 m elevation, with two networks at
+each level. Elevation orders the comparison; it is not an input to the
+regional SBM. The question is whether its interaction probabilities and
+the species present locally lead to different structural predictions
+along this gradient.
+
+We compare three ensembles at each site. Every simulated network has the
+observed number of distinct links.
+
+| Ensemble | Species | Link allocation |
+|----|----|----|
+| A: neutral | Observed local species | Equal chance among possible pairs |
+| B: regional SBM | Observed local species | Weighted by regional SBM probabilities |
+| C: changed composition | Random species from the regional pools, matched to local plant and frugivore richness | Weighted by the same regional SBM |
+
+**B − A** changes the interaction rule while holding composition fixed.
+**B − C** changes composition while holding the regional interaction
+rule fixed. These are differences in network metrics, not z scores.
+Random regional species are sampled with equal probability, an explicit
+simplifying assumption about arrival and establishment.
+
+## Load the regional model and reconstruct a site
+
+We fit one SBM to the interactions pooled across all six sites. The
+model assigns each plant and frugivore to a group and estimates a
+probability of interaction for each combination of plant and frugivore
+groups. These assignments and probabilities are included with the
+supplement and form the regional input to MetaWeave. We use this same
+model at every site.
+
+In the first chunk, `block_model()` turns those saved assignments and
+probabilities into one regional interaction rule. `new_assemblage()`
+lists the plants and frugivores recorded at a site, and
+`infer_network()` applies the rule to that assemblage. The returned
+matrix contains one interaction probability for each locally possible
+species pair.
+
+```{r}
+# Apply the pooled regional SBM to a locally recorded assemblage.
+library(metaweave)
+library(tidyverse)
+
+source_data <- new.env()
+load("data/ecuador/dataSet1.RData", envir = source_data)
+records <- source_data$dataSet1$N
+records <- records |>
+  filter(frequency > 0) |>
+  mutate(across(c(site, plantCode, animalCode), as.character))
+
+regional <- readRDS("data/ecuador/pooled_sbm_fit.rds")
+regional_rule <- block_model(
+  regional$row_lookup, regional$column_lookup, regional$theta,
+  "plants", "animals"
+)
+
+sites <- sort(unique(records$site))
+first_site <- records |> filter(site == sites[1])
+local_plants <- sort(unique(first_site$plantCode))
+local_animals <- sort(unique(first_site$animalCode))
+community <- new_assemblage(
+  list(plants = local_plants, animals = local_animals), cell_id = 1L
+)
+local_probabilities <- infer_network(community, regional_rule)$matrix
+tibble(site = sites[1], plants = nrow(local_probabilities),
+       frugivores = ncol(local_probabilities),
+       expected_links = round(sum(local_probabilities), 1)) |>
+  knitr::kable(digits = 1, caption = "An example local network inferred from the regional SBM.")
+```
+
+Each entry of `local_probabilities` is the regional model's probability
+for a pair whose species occur at this site. MetaWeave supplies this
+local matrix. The next step uses its values as weights in a
+fixed-link-count simulation; they are not independent Bernoulli draws.
+
+### How the regional fit was obtained
+
+To fit the regional model, we first combine the records from all six
+sites into a single binary network. Its entries represent observed
+species pairs: a pair is marked present if recorded at least once. The
+following displayed code shows the essential fitting and translation
+steps. It is not rerun in this document; `cassandRa` is required only
+when fitting a new regional model.
+
+```{r}
+#| eval: false
+#| echo: true
+# Make one binary metaweb from all sites, ignoring repeat frequency.
+plant_pool <- sort(unique(records$plantCode))
+animal_pool <- sort(unique(records$animalCode))
+metaweb <- matrix(0L, length(plant_pool), length(animal_pool),
+                  dimnames = list(plant_pool, animal_pool))
+metaweb[cbind(match(records$plantCode, plant_pool),
+              match(records$animalCode, animal_pool))] <- 1L
+
+# Fit once regionally; do not refit the model at individual sites.
+set.seed(5537283)
+candidate_fits <- cassandRa::FitSBM(
+  list = cassandRa::CreateListObject(metaweb), n_SBM = 10, G = NULL
+)
+best <- candidate_fits$SBM1
+theta <- best$Omega_rs
+rownames(theta) <- paste0("plant_block_", seq_len(nrow(theta)))
+colnames(theta) <- paste0("animal_block_", seq_len(ncol(theta)))
+row_lookup <- tibble(species = plant_pool,
+                     guild = rownames(theta)[as.integer(best$SB_H)])
+column_lookup <- tibble(species = animal_pool,
+                        guild = colnames(theta)[as.integer(best$SB_W)])
+```
+
+The regional network contains 102 plants, 127 frugivores and 536
+recorded species pairs. The selected SBM has ten plant groups and ten
+frugivore groups. The following table shows the estimated probabilities
+between those groups, which `block_model()` uses to build local
+predictions.
+
+```{r}
+# Display the regional network size and fitted interaction probabilities.
+tibble(plants = nrow(regional$metaweb),
+       frugivores = ncol(regional$metaweb),
+       regional_links = sum(regional$metaweb),
+       plant_blocks = nrow(regional$theta),
+       frugivore_blocks = ncol(regional$theta)) |>
+  pivot_longer(everything(), names_to = "Measure", values_to = "Value") |>
+  knitr::kable(caption = "Regional network and fitted block model.")
+theta_table <- regional$theta
+colnames(theta_table) <- paste0("F", seq_len(ncol(theta_table)))
+rownames(theta_table) <- paste0("P", seq_len(nrow(theta_table)))
+as_tibble(theta_table, rownames = "Plant group") |>
+  knitr::kable(digits = 2, caption = "Interaction probabilities for plant (P) and frugivore (F) groups.")
+```
+
+## Generate the comparison
+
+The following code constructs the three sets of simulated networks. For
+each site, it starts with the recorded species and links, then draws
+networks under each of the three rules described above. The regional
+model is fitted once to the pooled network; it is not refitted for each
+draw.
+
+```{r}
+#| eval: false
+# Generate the three ensembles using the pooled regional model.
+  library(vegan)
+  library(bipartite)
+
+  local_matrix <- function(x) {
+    plants <- sort(unique(x$plantCode))
+    animals <- sort(unique(x$animalCode))
+    m <- matrix(0L, length(plants), length(animals),
+                dimnames = list(plants, animals))
+    m[cbind(match(x$plantCode, plants),
+            match(x$animalCode, animals))] <- 1L
+    m
+  }
+  
+  probabilities <- function(plants, animals, id) {
+    assemblage <- new_assemblage(
+      list(plants = plants, animals = animals), cell_id = id
+    )
+    infer_network(assemblage, regional_rule)$matrix
+  }
+  
+  
+  fixed_links <- function(p, n, weighted) {
+    positions <- sample.int(length(p), n, replace = FALSE,
+                            prob = if (weighted) as.vector(p) else NULL)
+    m <- matrix(0L, nrow(p), ncol(p))
+    m[positions] <- 1L
+    m
+  }
+  
+  
+  network_metrics <- function(m) {
+    c(nodf = as.numeric(vegan::nestednodf(m)$statistic[["NODF"]]),
+      modularity = as.numeric(bipartite::computeModules(m)@likelihood))
+  }
+  
+```
+
+Within each draw, `new_assemblage()` supplies either the observed
+species or a richness-matched selection from the regional pool to
+`infer_network()`. MetaWeave reconstructs the local probability matrix
+under the *same* regional `block_model()` each time. The subsequent link
+sampling and NODF and modularity calculations use base R, `vegan` and
+`bipartite`; they follow MetaWeave's prediction. The document shows the
+code and loads its saved output for the tables and figure.
+
+```{r}
+#| eval: false
+  repetitions <- 49L
+  set.seed(5537283)
+  plant_pool <- sort(unique(records$plantCode))
+  animal_pool <- sort(unique(records$animalCode))
+  scenarios <- c("A_observed_neutral", "B_observed_sbm", "C_random_sbm")
+  draws <- array(NA_real_, c(length(sites), repetitions, 3L, 2L),
+                 dimnames = list(sites, NULL, scenarios,
+                                 c("nodf", "modularity")))
+  observed <- matrix(NA_real_, length(sites), 2L,
+                     dimnames = list(sites, c("nodf", "modularity")))
+  site_info <- data.frame(site = sites, elevation = NA_real_,
+                          plants = NA_integer_, animals = NA_integer_,
+                          links = NA_integer_)
+
+  for (i in seq_along(sites)) {
+    x <- records[records$site == sites[i], ]
+    m <- local_matrix(x)
+    n_links <- sum(m)
+    site_info$elevation[i] <- unique(x$elevation)
+    site_info$plants[i] <- nrow(m)
+    site_info$animals[i] <- ncol(m)
+    site_info$links[i] <- n_links
+    observed[i, ] <- network_metrics(m)
+    p_local <- probabilities(rownames(m), colnames(m), i)
+
+    for (r in seq_len(repetitions)) {
+      random_plants <- sort(sample(plant_pool, nrow(m)))
+      random_animals <- sort(sample(animal_pool, ncol(m)))
+      p_random <- probabilities(random_plants, random_animals, i)
+      draws[i, r, "A_observed_neutral", ] <-
+        network_metrics(fixed_links(p_local, n_links, FALSE))
+      draws[i, r, "B_observed_sbm", ] <-
+        network_metrics(fixed_links(p_local, n_links, TRUE))
+      draws[i, r, "C_random_sbm", ] <-
+        network_metrics(fixed_links(p_random, n_links, TRUE))
+    }
+  }
+  analysis <- list(site_info = site_info, observed = observed,
+                   draws = draws, reps = repetitions, seed = 5537283L)
+```
+
+```{r}
+#| include: false
+analysis <- readRDS("data/ecuador/assembly_mvp.rds")
+```
+
+### Sites along the gradient
+
+The number of plants, frugivores and distinct links varies among sites.
+Every ensemble retains its site's plant richness, frugivore richness and
+link count, so the contrasts below do not arise simply from drawing
+networks of different sizes.
+
+The following table lists the elevation, recorded species richness and
+number of distinct links at each site. These describe the observed
+networks used to set the size of each simulation.
+
+```{r}
+# Describe the observed assemblages in elevation order.
+site_table <- analysis$site_info |>
+  as_tibble() |>
+  arrange(elevation, site) |>
+  select(site, elevation, plants, frugivores = animals, links)
+site_table |>
+  knitr::kable(col.names = c("Site", "Elevation (m)", "Plants", "Frugivores", "Links"),
+               caption = "Observed networks along the elevation gradient.")
+```
+
+## Read the contrasts
+
+Nestedness (binary NODF) is higher when specialists' links tend to be
+subsets of generalists' links. Modularity is higher when interactions
+are more concentrated within groups. For each site we compare B with A
+and C draw by draw, then show the mean difference and its central 95%
+simulation interval. A circle in the figure represents **B − A**, the
+effect of using regional interaction weights for the observed species; a
+triangle represents **B − C**, the effect of keeping the observed
+species instead of a richness-matched regional draw. Neither symbol is
+an observed network metric.
+
+The contrast chunk subtracts metrics calculated after sampling links
+from MetaWeave's local probability matrices. It pairs draws within a
+site and reports the mean and central interval of each metric
+difference. The subtraction is in NODF or modularity units, not a
+standardized score.
+
+```{r}
+# Calculate interaction-rule and composition contrasts within each site.
+contrast <- function(metric, reference) {
+  b <- analysis$draws[, , "B_observed_sbm", metric]
+  other <- analysis$draws[, , reference, metric]
+  difference <- b - other
+  tibble(
+    site = dimnames(analysis$draws)[[1]],
+    metric = metric,
+    contrast = paste("B -", substr(reference, 1, 1)),
+    mean = rowMeans(difference),
+    lower = apply(difference, 1, quantile, 0.025),
+    upper = apply(difference, 1, quantile, 0.975)
+  )
+}
+
+comparison <- bind_rows(
+  contrast("nodf", "A_observed_neutral"),
+  contrast("nodf", "C_random_sbm"),
+  contrast("modularity", "A_observed_neutral"),
+  contrast("modularity", "C_random_sbm")
+  ) |>
+  left_join(as_tibble(analysis$site_info) |>
+              select(site, elevation), by = "site")
+comparison |>
+  arrange(elevation, site, metric, contrast) |>
+  knitr::kable(digits = 2, caption = "Mean contrasts and central 95% simulation intervals.")
+```
+
+The contrasts describe differences among simulated ensembles. The
+observed networks provide another reference: for example, a site may be
+more nested than all three ensemble means even when B − A is positive.
+The following table keeps observed structure and the three simulated
+means side by side. These means summarize 49 realizations, not 49 field
+networks.
+
+Here A, B and C summarize networks sampled after MetaWeave's
+`infer_network()` step. The `observed` column comes from field records;
+MetaWeave does not estimate that column.
+
+```{r}
+# Place observed metrics beside each ensemble's mean prediction.
+ensemble_table <- map_dfr(c("nodf", "modularity"), function(metric) {
+  tibble(
+    site = analysis$site_info$site,
+    elevation_m = analysis$site_info$elevation,
+    metric = metric,
+    observed = analysis$observed[, metric],
+    A_neutral = rowMeans(analysis$draws[, , "A_observed_neutral", metric]),
+    B_regional_SBM = rowMeans(analysis$draws[, , "B_observed_sbm", metric]),
+    C_changed_species = rowMeans(analysis$draws[, , "C_random_sbm", metric])
+  )
+})
+ensemble_table |>
+  mutate(across(c(observed, A_neutral, B_regional_SBM,
+                  C_changed_species), ~ round(.x, 2))) |>
+  arrange(elevation_m, site, metric) |>
+  knitr::kable(digits = 2,
+               col.names = c("Site", "Elevation (m)", "Metric", "Observed", "A", "B", "C"),
+               caption = "Observed network metrics and ensemble means.")
+```
+
+The figure plots the contrasts derived above, ordering the sites by the
+elevation supplied with their observed records. It visualizes the
+consequences of applying MetaWeave's regional rule to different local
+assemblages and link-allocation scenarios; elevation itself is not a
+predictor in `block_model()` or `infer_network()`.
+
+```{r}
+#| fig-width: 11
+#| fig-height: 6
+#| fig-cap: "Network assembly contrasts along the Ecuador elevation gradient. Sites are ordered from 1,000 to 3,000 m, with two sites per elevation. Circles show B − A (regional interaction rule); triangles show B − C (species composition). Points are means and vertical bars are central 95% intervals across 49 paired draws. The dashed line is zero difference."
+# Keep site labels and both contrasts aligned along the elevation gradient.
+site_labels <- site_table |>
+  mutate(label = paste0(site, "\n", elevation, " m"))
+plot_data <- comparison |>
+  left_join(site_labels |> select(site, label), by = "site") |>
+  mutate(label = factor(label, levels = site_labels$label),
+         metric = recode(metric, nodf = "Nestedness (NODF)",
+                         modularity = "Modularity"),
+         contrast = recode(contrast, `B - A` = "Interaction rule: B − A",
+                           `B - C` = "Composition: B − C"))
+
+ggplot(plot_data, aes(x = label, y = mean, colour = contrast,
+                      shape = contrast, group = contrast)) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey60") +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.12,
+                position = position_dodge(width = 0.45)) +
+  geom_point(size = 2.4, position = position_dodge(width = 0.45)) +
+  facet_wrap(~ metric, scales = "free_y", nrow = 1) +
+  scale_colour_manual(values = c("Interaction rule: B − A" = "#B2472F",
+                                 "Composition: B − C" = "#246B91")) +
+  scale_shape_manual(values = c("Interaction rule: B − A" = 16,
+                                "Composition: B − C" = 17)) +
+  labs(x = "Site and elevation along the gradient",
+       y = "Difference in network metric", colour = NULL, shape = NULL) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "bottom")
+```
+
+At the two 1,000-m sites, regional interaction weighting increased
+nestedness by about 13 and 16 NODF units relative to uniform allocation,
+and reduced modularity by about 0.05. The nestedness difference was
+smaller at 2,000 m and its interval crossed zero at both 3,000-m sites.
+The B − C nestedness intervals crossed zero at all six sites. This is a
+pattern across these six networks, not a fitted elevation effect or a
+test of a general altitudinal trend.
+
+An interval crossing zero means these 49 simulations do not clearly
+separate the two scenarios for that metric and site. The intervals
+describe variation among simulated networks, not uncertainty across
+Ecuadorian sites. The observed network is a separate reference; the
+contrasts isolate modeling choices rather than proving that any process
+caused its structure. The regional-pool randomization does not model
+unequal dispersal, habitat filtering, or species' abundance.
